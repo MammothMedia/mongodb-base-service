@@ -162,7 +162,7 @@ pub trait BaseService<'a> {
                 Err(e) => return Err(ServiceError::from(e)),
             }
         };
-        print!("!!!!!!!0!!!!!!");
+        println!("!MONGO BASE SERVICE FIND QUERY");
         Ok(find_results)
     }
 
