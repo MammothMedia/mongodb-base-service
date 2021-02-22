@@ -152,7 +152,7 @@ impl ID {
         match value.into() {
             Bson::String(s) => ID::String(s),
             Bson::ObjectId(o) => ID::ObjectId(o),
-            Bson::I64(i) => ID::I64(i),
+            Bson::Int64(i) => ID::I64(i),
             _ => panic!("Invalid id type used {:?}", value),
         }
     }
@@ -161,7 +161,7 @@ impl ID {
         match self {
             ID::ObjectId(o) => Bson::ObjectId(o.clone()),
             ID::String(s) => Bson::String(s.to_string()),
-            ID::I64(i) => Bson::I64(i.clone()),
+            ID::I64(i) => Bson::Int64(i.clone()),
         }
     }
 
@@ -201,8 +201,10 @@ use juniper::{
 };
 
 #[cfg(feature = "graphql")]
-graphql_scalar!(ID as "ID" where Scalar = <S>{
-    resolve(&self) -> Value {
+#[juniper::graphql_scalar(description = "An opaque identifier, represented as a string")]
+impl<S> GraphQLScalar for ID where
+    S: juniper::ScalarValue {
+    fn resolve(&self) -> Value {
         match self {
             ID::ObjectId(ref o) => Value::scalar(format!("$oid:{}", o.to_hex())),
             ID::String(ref s) =>  Value::scalar(s.clone()),
@@ -210,7 +212,7 @@ graphql_scalar!(ID as "ID" where Scalar = <S>{
         }
     }
 
-    from_input_value(v: &InputValue) -> Option<ID> {
+    fn from_input_value(v: &InputValue) -> Option<ID> {
         match *v {
             InputValue::Scalar(ref s) => {
                 match s.as_string() {
@@ -224,7 +226,7 @@ graphql_scalar!(ID as "ID" where Scalar = <S>{
         }
     }
 
-    from_str<'a>(value: ScalarToken<'a>) -> ParseScalarResult<'a, S> {
+    fn from_str<'a>(value: ScalarToken<'a>) -> ParseScalarResult<'a, S> {
         match value {
             ScalarToken::String(value) | ScalarToken::Int(value) => {
                 Ok(S::from(value.to_owned()))
@@ -232,7 +234,7 @@ graphql_scalar!(ID as "ID" where Scalar = <S>{
             _ => Err(ParseError::UnexpectedToken(Token::Scalar(value))),
         }
     }
-});
+}
 
 #[cfg(test)]
 mod tests {

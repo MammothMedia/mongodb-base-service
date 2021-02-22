@@ -19,14 +19,14 @@ impl From<io::Error> for ServiceError {
     }
 }
 
-impl From<bson::EncoderError> for ServiceError {
-    fn from(err: bson::EncoderError) -> ServiceError {
+impl From<bson::ser::Error> for ServiceError {
+    fn from(err: bson::ser::Error) -> ServiceError {
         ServiceError::ParseError(err.to_string())
     }
 }
 
-impl From<bson::DecoderError> for ServiceError {
-    fn from(err: bson::DecoderError) -> ServiceError {
+impl From<bson::de::Error> for ServiceError {
+    fn from(err: bson::de::Error) -> ServiceError {
         ServiceError::ParseError(err.to_string())
     }
 }

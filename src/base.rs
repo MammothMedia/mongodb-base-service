@@ -4,13 +4,14 @@ use log::{debug, warn};
 use mongodb::options::{FindOneOptions, FindOptions, InsertManyOptions, UpdateOptions};
 use mongodb::Collection;
 use mongodb_cursor_pagination::{CursorDirections, FindResult, PaginatedCursor};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::time::SystemTime;
 use voca_rs::case::snake_case;
 
 use crate::error::ServiceError;
 use crate::id::ID;
 use crate::node::Node;
+use async_trait::async_trait;
 
 #[derive(Serialize, Deserialize)]
 pub struct DeleteResponse {
@@ -96,6 +97,7 @@ pub mod mock_time {
 #[cfg(any(test, feature = "test"))]
 pub use mock_time::now;
 
+#[async_trait]
 pub trait BaseService<'a> {
     fn new(collection: &Collection, default_sort: Option<Document>) -> Self;
     fn id_parameter(&self) -> &'static str {
@@ -115,8 +117,8 @@ pub trait BaseService<'a> {
         None
     }
 
-    fn find<T>(
-        &self,
+    async fn find<T>(
+        &'a self,
         filter: Option<Document>,
         sort: Option<Document>,
         limit: Option<i32>,
@@ -125,7 +127,7 @@ pub trait BaseService<'a> {
         skip: Option<i32>,
     ) -> Result<FindResult<T>, ServiceError>
     where
-        T: serde::Deserialize<'a>,
+        T: DeserializeOwned + Send,
     {
         let coll = self.data_source();
         // build the options object
@@ -150,50 +152,99 @@ pub trait BaseService<'a> {
             PaginatedCursor::new(Some(find_options), after, None)
         };
         let find_results: FindResult<T> = if let Some(f) = filter {
-            query_cursor.find(&coll, Some(&f))?
+            match query_cursor.find(&coll, Some(&f)).await {
+                Ok(q) => q,
+                Err(e) => return Err(ServiceError::from(e)),
+            }
         } else {
-            query_cursor.find(&coll, self.default_filter())?
+            match query_cursor.find(&coll, self.default_filter()).await {
+                Ok(q) => q,
+                Err(e) => return Err(ServiceError::from(e)),
+            }
         };
+        print!("!!!!!!!0!!!!!!");
         Ok(find_results)
     }
 
-    fn get_embedded_by_id<U>(
-        &self,
-        id: ID,
-        field: &str,
-        limit: Option<i32>,
-        skip: Option<i32>,
-    ) -> Result<Vec<U>, ServiceError>
-    where
-        U: serde::Deserialize<'a>,
-    {
-        let coll = self.data_source();
-        let find_options = FindOneOptions::builder()
-            .projection(Some(doc! {
-                field: {
-                    "$slice": [ skip.unwrap_or(0), limit.unwrap_or(self.default_limit() as i32) ]
-                }
-            }))
-            .build();
-        let query = Some(doc! { self.id_parameter(): id.to_bson() });
-        let find_result = coll.find_one(query, Some(find_options))?;
-        match find_result {
-            Some(result) => {
-                let embedded_result = result.get_array(field);
-                match embedded_result {
-                    Ok(embedded) => {
-                        let docs = bson::from_bson(bson::Bson::Array(embedded.clone()))?;
-                        Ok(docs)
-                    }
-                    Err(e) => Err(ServiceError::ParseError(e.to_string())),
-                }
-            }
-            None => Ok(Vec::new()),
-        }
-    }
+    // fn aggregate<T>(
+    //     &self,
+    //     pipeline: Option<Document>,
+    //     sort: Option<Document>,
+    //     limit: Option<i32>,
+    //     after: Option<String>,
+    //     before: Option<String>,
+    //     skip: Option<i32>,
+    // ) -> Result<AggregateResult<T>, ServiceError>
+    // where
+    //     T: serde::Deserialize<'a>,
+    // {
+    //     let coll = self.data_source();
+    //     // build the options object
+    //     let aggregate_options = AggregateOptions::builder()
+    //         .limit(if let Some(l) = limit {
+    //             l as i64
+    //         } else {
+    //             self.default_limit()
+    //         })
+    //         .skip(if let Some(s) = skip { s as i64 } else { 0 })
+    //         // TODO: make this not something arbitrary for testing purposes
+    //         .sort(if let Some(s) = sort {
+    //             s
+    //         } else {
+    //             self.default_sort()
+    //         })
+    //         .build();
+    //     let is_previous_query = before.is_some() && after.is_none();
+    //     let query_cursor = if is_previous_query {
+    //         PaginatedCursor::new(Some(aggregate_options), before, Some(CursorDirections::Previous))
+    //     } else {
+    //         PaginatedCursor::new(Some(aggregate_options), after, None)
+    //     };
+    //     let aggregate_results: AggregateResult<T> = if let Some(f) = pipeline {
+    //         query_cursor.aggregate(&coll, Some(&f))?
+    //     } else {
+    //         query_cursor.aggregate(&coll, self.default_filter())?
+    //     };
+    //     Ok(aggregate_results)
+    // }
 
-    fn search<T>(
-        &self,
+    // fn get_embedded_by_id<U>(
+    //     &self,
+    //     id: ID,
+    //     field: &str,
+    //     limit: Option<i32>,
+    //     skip: Option<i32>,
+    // ) -> Result<Vec<U>, ServiceError>
+    // where
+    //     U: serde::Deserialize<'a>,
+    // {
+    //     let coll = self.data_source();
+    //     let find_options = FindOneOptions::builder()
+    //         .projection(Some(doc! {
+    //             field: {
+    //                 "$slice": [ skip.unwrap_or(0), limit.unwrap_or(self.default_limit() as i32) ]
+    //             }
+    //         }))
+    //         .build();
+    //     let query = Some(doc! { self.id_parameter(): id.to_bson() });
+    //     let find_result = coll.find_one(query, Some(find_options))?;
+    //     match find_result {
+    //         Some(result) => {
+    //             let embedded_result = result.get_array(field);
+    //             match embedded_result {
+    //                 Ok(embedded) => {
+    //                     let docs = bson::from_bson(bson::Bson::Array(embedded.clone()))?;
+    //                     Ok(docs)
+    //                 }
+    //                 Err(e) => Err(ServiceError::ParseError(e.to_string())),
+    //             }
+    //         }
+    //         None => Ok(Vec::new()),
+    //     }
+    // }
+
+    async fn search<T>(
+        &'a self,
         search_term: String,
         fields: Vec<String>,
         sort: Option<Document>,
@@ -203,7 +254,7 @@ pub trait BaseService<'a> {
         skip: Option<i32>,
     ) -> Result<FindResult<T>, ServiceError>
     where
-        T: serde::Deserialize<'a>,
+        T: DeserializeOwned + Send,
     {
         let coll = self.data_source();
         // build the options object
@@ -231,39 +282,49 @@ pub trait BaseService<'a> {
         let or_array = filter.get_array_mut("$or").unwrap();
         for field in fields.iter().map(|f| snake_case(&f)) {
             or_array.push(Bson::Document(
-                doc! { field: Bson::RegExp(search_term.clone(), "i".to_string()) },
+                doc! { 
+                    field: Bson::RegularExpression(
+                        bson::Regex { pattern: search_term.clone(),  options: "i".to_string() }
+                    )
+                }
             ));
         }
-        let find_results: FindResult<T> = query_cursor.find(&coll, Some(&filter))?;
+        let find_results: FindResult<T> = match query_cursor.find(&coll, Some(&filter)).await {
+            Ok(r) => r,
+            Err(e) => return Err(ServiceError::from(e)),
+        };
         Ok(find_results)
     }
 
-    fn find_one<T>(&self, filter: Document) -> Result<Option<T>, ServiceError>
+    async fn find_one<T>(&'a self, filter: Document) -> Result<Option<T>, ServiceError>
     where
-        T: serde::Deserialize<'a>,
+        T: DeserializeOwned,
     {
         let coll = self.data_source();
-        let find_result = coll.find_one(filter, None)?;
-        match find_result {
+        let find_result = coll.find_one(filter, None).await;
+        match Some(find_result) {
             Some(item_doc) => {
-                let doc = bson::from_bson(bson::Bson::Document(item_doc))?;
+                let doc = bson::from_bson(bson::Bson::Document(item_doc.unwrap().unwrap()))?;
                 Ok(Some(doc))
             }
             None => Ok(None),
         }
     }
 
-    fn find_one_by_object_id<T>(
-        &self,
+    async fn find_one_by_object_id<T>(
+        &'a self,
         field: &str,
         value: ObjectId,
     ) -> Result<Option<T>, ServiceError>
     where
-        T: serde::Deserialize<'a>,
+        T: DeserializeOwned + Send,
     {
         let coll = self.data_source();
-        let query = Some(doc! { field => value });
-        let find_result = coll.find_one(query, None)?;
+        let query = Some(doc! { field: value });
+        let find_result = match coll.find_one(query, None).await {
+            Ok(f) => f,
+            Err(e) => return Err(ServiceError::from(e))
+        };
         match find_result {
             Some(item_doc) => {
                 let doc = bson::from_bson(bson::Bson::Document(item_doc))?;
@@ -273,28 +334,40 @@ pub trait BaseService<'a> {
         }
     }
 
-    fn find_one_by_id<T>(&self, id: ID) -> Result<Option<T>, ServiceError>
+    async fn find_one_by_id<T>(&'a self, id: ID) -> Result<Option<T>, ServiceError>
     where
-        T: serde::Deserialize<'a>,
+        T: DeserializeOwned + Send,
     {
         match id {
-            ID::String(s) => self.find_one_by_string_value(self.id_parameter(), &s),
-            ID::I64(i) => self.find_one_by_i64(self.id_parameter(), i),
-            ID::ObjectId(o) => self.find_one_by_object_id(self.id_parameter(), o),
+            ID::String(s) => match self.find_one_by_string_value(self.id_parameter(), &s).await {
+                Ok(r) => Ok(r),
+                Err(e) => return Err(ServiceError::from(e))
+            },
+            ID::I64(i) => match self.find_one_by_i64(self.id_parameter(), i).await {
+                Ok(r) => Ok(r),
+                Err(e) => return Err(ServiceError::from(e))
+            },
+            ID::ObjectId(o) => match self.find_one_by_object_id(self.id_parameter(), o).await {
+                Ok(r) => Ok(r),
+                Err(e) => return Err(ServiceError::from(e))
+            },
         }
     }
 
-    fn find_one_by_string_value<T>(
-        &self,
+    async fn find_one_by_string_value<T>(
+        &'a self,
         field: &str,
         value: &str,
     ) -> Result<Option<T>, ServiceError>
     where
-        T: serde::Deserialize<'a>,
+        T: DeserializeOwned + Send
     {
         let coll = self.data_source();
-        let query = Some(doc! { field => value });
-        let find_result = coll.find_one(query, None)?;
+        let query = Some(doc! { field: value });
+        let find_result = match coll.find_one(query, None).await {
+            Ok(r) => r,
+            Err(e) => return Err(ServiceError::from(e))
+        };
         match find_result {
             Some(item_doc) => {
                 let doc = bson::from_bson(bson::Bson::Document(item_doc))?;
@@ -304,13 +377,16 @@ pub trait BaseService<'a> {
         }
     }
 
-    fn find_one_by_i64<T>(&self, field: &str, value: i64) -> Result<Option<T>, ServiceError>
+    async fn find_one_by_i64<T>(&'a self, field: &str, value: i64) -> Result<Option<T>, ServiceError>
     where
-        T: serde::Deserialize<'a>,
+        T: DeserializeOwned + Send,
     {
         let coll = self.data_source();
-        let query = Some(doc! { field => value });
-        let find_result = coll.find_one(query, None)?;
+        let query = Some(doc! { field: value });
+        let find_result = match coll.find_one(query, None).await {
+            Ok(r) => r,
+            Err(e) => return Err(ServiceError::from(e))
+        };
         match find_result {
             Some(item_doc) => {
                 let doc = bson::from_bson(bson::Bson::Document(item_doc))?;
@@ -320,20 +396,23 @@ pub trait BaseService<'a> {
         }
     }
 
-    fn insert_embedded<T>(
-        &self,
+    async fn insert_embedded<T>(
+        &'a self,
         id: ID,
         field_path: &str,
         new_items: Vec<T>,
         user_id: Option<ID>,
     ) -> Result<Vec<ID>, ServiceError>
     where
-        T: serde::Serialize,
+        T: serde::Serialize + Send,
     {
         // get the item
         let coll = self.data_source();
         let query = doc! { self.id_parameter(): id.to_bson() };
-        let find_result = coll.find_one(Some(query.clone()), None).unwrap();
+        let find_result = match coll.find_one(Some(query.clone()), None).await {
+            Ok(r) => r,
+            Err(e) => return Err(ServiceError::from(e))
+        };
         let mut inserted_ids: Vec<ID> = Vec::new();
         let timestamp = now()
             .duration_since(SystemTime::UNIX_EPOCH)
@@ -380,14 +459,17 @@ pub trait BaseService<'a> {
                 });
 
                 let update_doc = doc! { "$push": { field_path: { "$each": serialized_members } } };
-                let _result = coll.update_one(query, update_doc, None)?;
+                let _result = match coll.update_one(query, update_doc, None).await {
+                    Ok(r) => r,
+                    Err(e) => return Err(ServiceError::from(e))
+                };
                 Ok(inserted_ids)
             }
         }
     }
 
-    fn upsert_embedded<T, U>(
-        &self,
+    async fn upsert_embedded<T, U>(
+        &'a self,
         id: ID,
         field_path: &str,
         new_items: Vec<T>,
@@ -395,8 +477,8 @@ pub trait BaseService<'a> {
         parent: Option<U>,
     ) -> Result<Vec<ID>, ServiceError>
     where
-        T: serde::Serialize,
-        U: serde::Serialize,
+        T: serde::Serialize + Send,
+        U: serde::Serialize + Send,
     {
         // get the item
         let coll = self.data_source();
@@ -439,24 +521,27 @@ pub trait BaseService<'a> {
             let serialized_parent = bson::to_bson(&parent)?;
             update_doc.insert("$setOnInsert", serialized_parent);
         }
-        let _result = coll.update_one(
+        let _result = match coll.update_one(
             query,
             update_doc,
-            UpdateOptions {
-                array_filters: None,
-                bypass_document_validation: None,
-                collation: None,
-                hint: None,
-                upsert: Some(true),
-                write_concern: None,
-            },
-        )?;
+            UpdateOptions::builder()
+                .array_filters(None)
+                .bypass_document_validation(None)
+                .collation(None)
+                .hint(None)
+                .upsert(Some(true))
+                .write_concern(None)
+                .build(),
+        ).await {
+            Ok(r) => r,
+            Err(e) => return Err(ServiceError::from(e))
+        };
         Ok(inserted_ids)
     }
 
-    fn insert_one<T>(&self, new_item: T, user_id: Option<ID>) -> Result<ID, ServiceError>
+    async fn insert_one<T>(&'a self, new_item: T, user_id: Option<ID>) -> Result<ID, ServiceError>
     where
-        T: serde::Serialize,
+        T: serde::Serialize + Send,
     {
         let coll = self.data_source();
         let serialized_member = bson::to_bson(&new_item)?;
@@ -483,7 +568,10 @@ pub trait BaseService<'a> {
                     _ => debug!("id has value {}", temp_id),
                 }
             }
-            let result = coll.insert_one(document, None)?; // Insert into a MongoDB collection
+            let result = match coll.insert_one(document, None).await {
+                Ok(r) => r,
+                Err(e) => return Err(ServiceError::from(e))
+            };
             let id = ID::with_bson(&result.inserted_id);
             Ok(id)
         } else {
@@ -494,13 +582,13 @@ pub trait BaseService<'a> {
         }
     }
 
-    fn insert_many<T>(
-        &self,
+    async fn insert_many<T>(
+        &'a self,
         new_items: Vec<T>,
         user_id: Option<ID>,
     ) -> Result<Vec<ID>, ServiceError>
     where
-        T: serde::Serialize,
+        T: serde::Serialize + Send,
     {
         let coll = self.data_source();
         let timestamp = now()
@@ -527,15 +615,17 @@ pub trait BaseService<'a> {
             acc
         });
 
-        let result = coll.insert_many(
+        let result = match coll.insert_many(
             serialized_members,
-            InsertManyOptions {
-                bypass_document_validation: None,
-                // dont stop if there's a failure on one item
-                ordered: Some(false),
-                write_concern: None,
-            },
-        )?;
+            InsertManyOptions::builder()
+                .bypass_document_validation(None)
+                .ordered(Some(false))
+                .write_concern(None)
+                .build(),
+        ).await {
+            Ok(r) => r,
+            Err(e) => return Err(ServiceError::from(e))
+        };
         let ids: Vec<ID> = result
             .inserted_ids
             .values()
@@ -545,10 +635,10 @@ pub trait BaseService<'a> {
         Ok(ids)
     }
 
-    fn delete_one_by_id(&self, id: ID) -> Result<DeleteResponse, ServiceError> {
+    async fn delete_one_by_id(&'a self, id: ID) -> Result<DeleteResponse, ServiceError> {
         let coll = self.data_source();
         let filter = doc! { self.id_parameter(): id.to_bson() };
-        let result = coll.delete_one(filter, None);
+        let result = coll.delete_one(filter, None).await;
         match result {
             Ok(r) => Ok(DeleteResponse {
                 id,
@@ -558,17 +648,17 @@ pub trait BaseService<'a> {
         }
     }
 
-    fn delete_one_by_query(&self, filter: Document) -> Result<bool, ServiceError> {
+    async fn delete_one_by_query(&'a self, filter: Document) -> Result<bool, ServiceError> {
         let coll = self.data_source();
-        let result = coll.delete_one(filter, None);
+        let result = coll.delete_one(filter, None).await;
         match result {
             Ok(r) => Ok(r.deleted_count == 1),
             Err(e) => Err(e.into()),
         }
     }
 
-    fn delete_embedded(
-        &self,
+    async fn delete_embedded(
+        &'a self,
         id: ID,
         field_path: &str,
         embedded_id: ID,
@@ -577,15 +667,18 @@ pub trait BaseService<'a> {
         let query = doc! { self.id_parameter(): &id.to_bson() };
         let update_doc =
             doc! { "$pull": { field_path: { self.id_parameter(): &embedded_id.to_bson()} } };
-        let _result = coll.update_one(query, update_doc, None)?;
+        let _result = match coll.update_one(query, update_doc, None).await {
+            Ok(r) => r,
+            Err(e) => return Err(ServiceError::from(e))
+        };
         Ok(DeleteResponse {
             id: embedded_id,
             success: true,
         })
     }
 
-    fn update_embedded<T, U>(
-        &self,
+    async fn update_embedded<T, U>(
+        &'a self,
         id: ID,
         field_path: &str,
         embedded_id: ID,
@@ -593,8 +686,8 @@ pub trait BaseService<'a> {
         user_id: Option<ID>,
     ) -> Result<U, ServiceError>
     where
-        T: serde::Serialize,
-        U: serde::Deserialize<'a>,
+        T: serde::Serialize + Send,
+        U: DeserializeOwned,
     {
         let coll = self.data_source();
         let search_embedded = doc! {
@@ -622,8 +715,8 @@ pub trait BaseService<'a> {
 
             let update = doc! { "$set": update_doc };
             let search = doc! { self.id_parameter(): &id.to_bson() };
-            match coll.update_one(search_embedded, update, None) {
-                Ok(_res) => match coll.find_one(Some(search), None) {
+            match coll.update_one(search_embedded, update, None).await {
+                Ok(_res) => match coll.find_one(Some(search), None).await {
                     Ok(res) => match res {
                         Some(doc) => {
                             let item: U = bson::from_bson(bson::Bson::Document(doc))?;
@@ -643,15 +736,15 @@ pub trait BaseService<'a> {
         }
     }
 
-    fn update_one<T, U>(
-        &self,
+    async fn update_one<T, U>(
+        &'a self,
         id: ID,
         update_item: T,
         user_id: Option<ID>,
     ) -> Result<U, ServiceError>
     where
-        T: serde::Serialize,
-        U: serde::Deserialize<'a> + Node,
+        T: serde::Serialize + Send,
+        U: DeserializeOwned,
     {
         let coll = self.data_source();
         let search = doc! { self.id_parameter(): id.to_bson() };
@@ -665,8 +758,8 @@ pub trait BaseService<'a> {
             if let Some(uid) = user_id {
                 document.insert("node.updated_by_id", uid.to_bson());
             }
-            match coll.update_one(search.clone(), doc! {"$set": document}, None) {
-                Ok(_res) => match coll.find_one(Some(search), None) {
+            match coll.update_one(search.clone(), doc! {"$set": document}, None).await {
+                Ok(_res) => match coll.find_one(Some(search), None).await {
                     Ok(res) => match res {
                         Some(doc) => {
                             let item: U = bson::from_bson(bson::Bson::Document(doc))?;
@@ -686,17 +779,17 @@ pub trait BaseService<'a> {
         }
     }
 
-    fn update_one_with_doc<U>(&self, id: ID, update_doc: Document) -> Result<U, ServiceError>
+    async fn update_one_with_doc<T>(&'a self, id: ID, update_doc: Document) -> Result<T, ServiceError>
     where
-        U: serde::Deserialize<'a>,
+        T: DeserializeOwned,
     {
         let coll = self.data_source();
         let search = doc! { self.id_parameter(): id.to_bson() };
-        match coll.update_one(search.clone(), update_doc, None) {
-            Ok(_res) => match coll.find_one(Some(search), None) {
+        match coll.update_one(search.clone(), update_doc, None).await {
+            Ok(_res) => match coll.find_one(Some(search), None).await {
                 Ok(res) => match res {
                     Some(doc) => {
-                        let item: U = bson::from_bson(bson::Bson::Document(doc))?;
+                        let item: T = bson::from_bson(bson::Bson::Document(doc))?;
                         Ok(item)
                     }
                     None => Err(ServiceError::NotFound("Unable to find item".to_owned())),
